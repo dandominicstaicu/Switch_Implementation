@@ -24,6 +24,17 @@ def parse_ethernet_header(data):
 
     return dest_mac, src_mac, ether_type, vlan_id
 
+def is_broadcast(mac_address):
+    return mac_address == b'\xff\xff\xff\xff\xff\xff'
+
+def is_multicast(mac_address):
+    # Multicast addresses have the least significant bit of the first octet set to 1
+    return (mac_address[0] & 1) == 1 and not is_broadcast(mac_address)
+
+def is_unicast(mac_address):
+    # Unicast addresses have the least significant bit of the first octet set to 0
+    return (mac_address[0] & 1) == 0
+
 def create_vlan_tag(vlan_id):
     # 0x8100 for the Ethertype for 802.1Q
     # vlan_id & 0x0FFF ensures that only the last 12 bits are used
@@ -41,6 +52,8 @@ def main():
 
     num_interfaces = wrapper.init(sys.argv[2:])
     interfaces = range(0, num_interfaces)
+
+    mac_table = {}
 
     print("# Starting switch with id {}".format(switch_id), flush=True)
     print("[INFO] Switch MAC", ':'.join(f'{b:02x}' for b in get_switch_mac()))
@@ -63,8 +76,8 @@ def main():
         dest_mac, src_mac, ethertype, vlan_id = parse_ethernet_header(data)
 
         # Print the MAC src and MAC dst in human readable format
-        dest_mac = ':'.join(f'{b:02x}' for b in dest_mac)
-        src_mac = ':'.join(f'{b:02x}' for b in src_mac)
+        # dest_mac = ':'.join(f'{b:02x}' for b in dest_mac)
+        # src_mac = ':'.join(f'{b:02x}' for b in src_mac)
 
         # Note. Adding a VLAN tag can be as easy as
         # tagged_frame = data[0:12] + create_vlan_tag(10) + data[12:]
@@ -75,7 +88,29 @@ def main():
 
         print("Received frame of size {} on interface {}".format(length, interface), flush=True)
 
+        mac_table[src_mac] = interface
+
         # TODO: Implement forwarding with learning
+
+        # Decide how to forward the frame 
+        if is_broadcast(dest_mac) or is_multicast(dest_mac):
+            # Flood the frame to all intrefaces
+            for i in interfaces:
+                # Except the incoming one
+                if i != interface:
+                    send_to_link(i, length, data)
+        else:
+            # Unicast address
+            if dest_mac in mac_table:
+                out_interface = mac_table[dest_mac]
+                if out_interface != interface:
+                    send_to_link(out_interface, length, data)
+            else:
+                # Dest MAC not in the table, flood the frame
+                for i in interfaces:
+                    if i != interface:
+                        send_to_link(i, length, data)
+
         # TODO: Implement VLAN support
         # TODO: Implement STP support
 
