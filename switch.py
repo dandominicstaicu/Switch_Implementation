@@ -40,10 +40,43 @@ def create_vlan_tag(vlan_id):
     # vlan_id & 0x0FFF ensures that only the last 12 bits are used
     return struct.pack('!H', 0x8200) + struct.pack('!H', vlan_id & 0x0FFF)
 
+def remove_vlan_tag(data):
+    data_without_vlan = data[0:12] + data[16:]
+    return data_without_vlan
+
 def send_bdpu_every_sec():
     while True:
         # TODO Send BDPU every second if necessary
         time.sleep(1)
+
+def read_switch_config(id):
+        config_file = f'./configs/switch{id}.cfg'
+        print(config_file)
+        port_config = {}
+        switch_priority = None
+
+        try:
+            with open(config_file, 'r') as f:
+                lines = f.readlines()
+                switch_priority = int(lines[0].strip())
+                for line in lines[1:]:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    tokens = line.split()
+                    interface_name = tokens[0]
+                    if len(tokens) < 2:
+                        continue
+                    if tokens[1] == 'T':
+                        port_config[interface_name] = {'mode' : 'trunk'}
+                    else:
+                        vlan_id = int(tokens[1])
+                        port_config[interface_name] = {'mode': 'access', 'vlan': vlan_id}
+                    
+
+        except Exception as e:
+            print("Error reading switch configuration file {config_file}: {e}")
+        return switch_priority, port_config
 
 def main():
     # init returns the max interface number. Our interfaces
@@ -54,6 +87,24 @@ def main():
     interfaces = range(0, num_interfaces)
 
     mac_table = {}
+
+    switch_priority, port_config = read_switch_config(switch_id)
+
+    interface_name_to_number = {}
+    interface_number_to_name = {}
+
+    for i in interfaces:
+        interface_name = get_interface_name(i)
+        interface_number_to_name[i] = interface_name
+        interface_name_to_number[interface_name] = i
+
+    interface_config = {}
+    for i in interfaces:
+        interface_name = interface_number_to_name[i]
+        if interface_name in port_config:
+            interface_config[i] = port_config[interface_name]
+        else:
+            interface_config[i] = {'mode': 'access', 'vlan': 1}
 
     print("# Starting switch with id {}".format(switch_id), flush=True)
     print("[INFO] Switch MAC", ':'.join(f'{b:02x}' for b in get_switch_mac()))
@@ -88,30 +139,70 @@ def main():
 
         print("Received frame of size {} on interface {}".format(length, interface), flush=True)
 
-        mac_table[src_mac] = interface
-
         # TODO: Implement forwarding with learning
+        # TODO: Implement VLAN support
 
-        # Decide how to forward the frame 
+        # Decide how to forward the frame
+        incoming_interface_config = interface_config[interface]
+        if incoming_interface_config['mode'] == 'access':
+            # Access port, add VLAN tag
+            port_vlan_id = incoming_interface_config['vlan']
+            vlan_id = port_vlan_id
+            vlan_tag = create_vlan_tag(vlan_id)
+            data = data[0:12] + vlan_tag + data[12:]
+            length += 4
+        elif incoming_interface_config['mode'] == 'trunk':
+            if vlan_id == -1:
+                print(f"Error: Received untagged frame on trunk port {interface}", file=sys.stderr)
+                continue
+            # VLAN ID is extracted
+        else:
+            print(f"Error: Unknown port mode on interface {interface}", file=sys.stderr)
+            continue
+
+        mac_table[(src_mac, vlan_id)] = interface
+
+        # Forwarding logic
         if is_broadcast(dest_mac) or is_multicast(dest_mac):
-            # Flood the frame to all intrefaces
             for i in interfaces:
-                # Except the incoming one
-                if i != interface:
+                if i == interface:
+                    continue
+                outgoing_interface_config = interface_config[i]
+                if outgoing_interface_config['mode'] == 'access':
+                    if outgoing_interface_config['vlan'] != vlan_id:
+                        continue
+                    data_to_send = remove_vlan_tag(data)
+                    send_to_link(i, length - 4, data_to_send)
+                elif outgoing_interface_config['mode'] == 'trunk':
                     send_to_link(i, length, data)
         else:
-            # Unicast address
-            if dest_mac in mac_table:
-                out_interface = mac_table[dest_mac]
+            key = (dest_mac, vlan_id)
+            if key in mac_table:
+                out_interface = mac_table[key]
                 if out_interface != interface:
-                    send_to_link(out_interface, length, data)
+                    outgoing_interface_config = interface_config[out_interface]
+                    if outgoing_interface_config['mode'] == 'access':
+                        data_to_send = remove_vlan_tag(data)
+                        send_to_link(out_interface, length - 4, data_to_send)
+                    elif outgoing_interface_config['mode'] == 'trunk':
+                        send_to_link(out_interface, length, data)
             else:
-                # Dest MAC not in the table, flood the frame
+                # Flood the frame
                 for i in interfaces:
-                    if i != interface:
+                    if i == interface:
+                        continue
+                    outgoing_interface_config = interface_config[i]
+                    if outgoing_interface_config['mode'] == 'access':
+                        if outgoing_interface_config['vlan'] != vlan_id:
+                            continue
+                        data_to_send = remove_vlan_tag(data)
+                        send_to_link(i, length - 4, data_to_send)
+                    elif outgoing_interface_config['mode'] == 'trunk':
                         send_to_link(i, length, data)
 
-        # TODO: Implement VLAN support
+
+        
+
         # TODO: Implement STP support
 
         # data is of type bytes.
