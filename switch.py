@@ -147,7 +147,6 @@ def run_stp(data, interface, own_bridge_ID, root_bridge_ID, root_path_cost, root
 def read_switch_config(id):
     # Read switch configuration file to determine priority and port configurations
     config_file = f'./configs/switch{id}.cfg'
-    print(config_file)
     port_config = {}
     switch_priority = None
     try:
@@ -207,9 +206,6 @@ def main():
         else:
             interface_config[i] = {'mode': 'access', 'vlan': 1}
 
-    print("# Starting switch with id {}".format(switch_id), flush=True)
-    print("[INFO] Switch MAC", ':'.join(f'{b:02x}' for b in get_switch_mac()))
-
     # Initialize STP variables
     port_state = {}
     own_bridge_ID = switch_priority
@@ -232,10 +228,6 @@ def main():
     t = threading.Thread(target=send_bdpu_every_sec, args=(interfaces, port_state, interface_config, own_bridge_ID, root_bridge_ID, root_path_cost))
     t.start()
 
-    # Printing interface names
-    for i in interfaces:
-        print(get_interface_name(i))
-
     while True:
         # Receive frames from any interface.
         interface, data, length = recv_from_any_link()
@@ -246,12 +238,6 @@ def main():
 
         # Parse Ethernet header to extract destination MAC, source MAC, EtherType, and VLAN ID.
         dest_mac, src_mac, ethertype, vlan_id = parse_ethernet_header(data)
-
-        # Log the frame details for debugging.
-        print(f'Destination MAC: {dest_mac}')
-        print(f'Source MAC: {src_mac}')
-        print(f'EtherType: {ethertype}')
-        print("Received frame of size {} on interface {}".format(length, interface), flush=True)
 
         # If the frame is a BPDU, handle STP processing and update root bridge info.
         if dest_mac == b'\x01\x80\xc2\x00\x00\x00':
